@@ -31,6 +31,14 @@ class PackagesTermIndexer:
         self._packages.append(pkg)
         return pkg
 
+    @property
+    def term_indices(self):
+        return self.keys()
+
+    @property
+    def package_names(self):
+        return map(lambda p: p.name, self._packages)
+
     # calculate term frequency-inverse document frequency for the dataset
     # https://en.wikipedia.org/wiki/Tf%E2%80%93idf
     @property
@@ -55,7 +63,7 @@ class PackagesTermIndexer:
             self._global_weights_[term] = weight
         return self._global_weights_
 
-    def tdm(self):
+    def word_frequency_matrix(self):
         # build a term => index lookup
         index = dict([(val, idx) for idx, val in enumerate(self.keys())])
 
@@ -64,14 +72,26 @@ class PackagesTermIndexer:
             # initialize row to be a bunch of zeros
             row = [0] * len(self._global_term_count)
 
-            # fill in the weight for terms that do exist in this package
+            # fill in the frequency for terms that exist in this package
             for term, local_count in pkg.iteritems():
                 idx = index[term]
-                lg_term = math.log(local_count + 1.0, 2)
-                row[idx] = self.global_weights[term] * lg_term
+                row[idx] = local_count
             tdm.append(row)
         return tdm
 
+    # term frequency-inverse document frequency matrix
+    # this is similar to a word_frequency_matrix, but the values are
+    # weighted by how (in)frequently they appear in the corpus (all indexed packages)
+    def tfidf_matrix(self):
+        global_weights_by_index = self.global_weights.values()
+
+        def wf_to_tfidf(idx, local_count):
+            global_weight = global_weights_by_index[idx]
+            ln_local_count = math.log(local_count + 1.0, 2)
+            return global_weight * ln_local_count
+
+        wf_matrix = self.word_frequency_matrix()
+        return map(lambda row: [wf_to_tfidf(i,v) for i,v in enumerate(row)], wf_matrix)
 
 class _Package:
     def __init__(self, parent, name):
