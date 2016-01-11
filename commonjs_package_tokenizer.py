@@ -18,7 +18,7 @@ def tokenize_package(dir_name):
     for dirpath, dirnames, filenames in os.walk(lib_path):
         forbidden_dirs = [
             '/.git', '/docs', '/benchmark', '/benchmarks', '/i18n', '/images',
-            '/test', '/tests', '/examples', '/tutorials', '/vendor'
+            '/test', '/tests', '/examples', '/tutorials', '/vendor', '/node_modules'
         ]
         if reduce(lambda default, forbidden_d: 1 if forbidden_d in dirpath else default, forbidden_dirs, 0):
             continue
