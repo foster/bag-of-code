@@ -17,6 +17,7 @@ class PackagesTermIndexer:
         self._word_frequency_matrix_ = None
         self._tfidf_matrix_ = None
         self._svd_ = None
+        self._svd_wfm_ = None
 
     # fills the indexer with the set of all packages to train on
     # resets all internal state, calling this repeatedly is destructive
@@ -63,6 +64,8 @@ class PackagesTermIndexer:
             for pkg in self._packages:
                 if term in pkg:
                     local_count = pkg[term]
+                    if local_count == 0 or global_count == 0:
+                        print "unexpected zero: " + term
                     l_to_g_ratio = 1.0 * local_count / global_count
                     weight += l_to_g_ratio * math.log(l_to_g_ratio, 2) / logn
 
@@ -100,22 +103,31 @@ class PackagesTermIndexer:
     # this is similar to a word frequency matrix, but the values are
     # weighted by how (in)frequently they appear in the corpus (all indexed packages)
     def tfidf_matrix(self):
-        # memoize the result
-        if self._tfidf_matrix_ is not None:
-            return self._tfidf_matrix_
-
+        # implementation note: it appears faster to build a new matrix from scratch
+        # than try to map/transform a word frequency matrix
         global_weights_by_index = self.global_weights_.values()
 
-        def wf_to_tfidf(idx, local_count):
-            global_weight = global_weights_by_index[idx]
-            ln_local_count = math.log(local_count + 1.0, 2)
-            return global_weight * ln_local_count
-        def wf_vec_to_tfidf_vec(vector):
-            return [wf_to_tfidf(i,v) for i,v in enumerate(vector)]
+        # build a term => index lookup
+        all_terms = self._global_term_count.keys()
+        index = dict([(val, idx) for idx, val in enumerate(all_terms)])
+        row_len = len(index)
 
-        wfm = self.word_frequency_matrix()
-        self._tfidf_matrix_ = np.apply_along_axis(wf_vec_to_tfidf_vec, 1, wfm)
-        return self._tfidf_matrix_
+        pkg_rows = []
+        for pkg in self._packages:
+            # initialize row to be a bunch of zeros
+            row = [0] * row_len
+
+            # fill in the frequency for terms that exist in this package
+            for term, local_count in pkg.iteritems():
+                idx = index[term]
+                global_weight = global_weights_by_index[idx]
+
+                ln_local_count = math.log(local_count + 1.0, 2)
+                row[idx] = global_weight * ln_local_count
+
+            pkg_rows.append(row)
+
+        return np.matrix(pkg_rows).transpose()
 
     def svd(self):
         # memoize the result
@@ -125,6 +137,14 @@ class PackagesTermIndexer:
         self._svd_ = (T, sigma, D_trans)
         return self._svd_
 
+    def svd_wfm(self):
+        #memoize the result
+        if self._svd_wfm_ is not None:
+            return self._svd_wfm_
+        T, sigma, D_trans = linalg.svd(self.word_frequency_matrix(), full_matrices=False)
+        self._svd_wfm_ = (T, sigma, D_trans)
+        return self._svd_wfm_
+
     # map an unknown package to our term space
     # result is a word frequency matrix
     def fold_wfm(self, package):
@@ -132,7 +152,7 @@ class PackagesTermIndexer:
         for idx, term in enumerate(self._global_term_count):
             if term not in package: continue
             vec[idx] = package[term]
-        return vec
+        return np.matrix(vec)
 
     # map an unknown package to our term space
     # result is a tfidf matrix
@@ -144,20 +164,43 @@ class PackagesTermIndexer:
             local_count = package[term]
             ln_local_count = math.log(local_count + 1.0, 2)
             vec[idx] = global_weight * ln_local_count
-        return vec
+        return np.matrix(vec)
 
     # map an unknown package to our term space
     # result is an svd
     def fold_svd(self, package):
-        T, sigma, D_trans = self.svd()
-        pkg_vector = self.fold_tfidf(package)
+        # T is a matrix representing the terms.
+        # D is a matrix representing the documents.
+        # sigma is a diagonal matrix of singular values.
+        T, sigma, D_t = self.svd()
 
-        n = D_trans.shape[1]
-        sigma_inv = np.linalg.inv(linalg.diagsvd(sigma, n, n))
-        vec = np.matrix(pkg_vector)
-        folded_vec = np.dot(np.dot(vec, T), sigma_inv)
-        return folded_vec
-        
+        sigma_full_matrix = linalg.diagsvd(sigma, len(sigma), len(sigma))
+        sigma_inv = np.linalg.inv(sigma_full_matrix)
+
+        folded_tfidf = self.fold_tfidf(package)
+
+        # calculate a representation of the new document as a vector of SVDs
+        folded_doc_dot_T = np.dot(folded_tfidf, T)
+        folded_svd_vec = np.dot(folded_doc_dot_T, sigma_inv)
+
+        return folded_svd_vec
+
+    def fold_svd_wfm(self, package):
+        # T is a matrix representing the terms.
+        # D is a matrix representing the documents.
+        # sigma is a diagonal matrix of singular values.
+        T, sigma, D_t = self.svd()
+
+        sigma_full_matrix = linalg.diagsvd(sigma, len(sigma), len(sigma))
+        sigma_inv = np.linalg.inv(sigma_full_matrix)
+
+        folded_wfm = self.fold_wfm(package)
+
+        # calculate a representation of the new document as a vector of SVDs
+        folded_doc_dot_T = np.dot(folded_wfm, T)
+        folded_svd_vec = np.dot(folded_doc_dot_T, sigma_inv)
+
+        return folded_svd_vec
 
 
 class Package:
