@@ -6,23 +6,11 @@ import numpy as np
 class PackagesTermIndexer:
     def __init__(self):
         self._packages = []
-        self.__reset()
         self._global_term_count = OrderedDict()
-
-    # reset all internal state.
-    # used every time fit() is called.
-    def __reset(self):
-        self.index = None
-        self._global_weights_ = None
-        self._word_frequency_matrix_ = None
-        self._tfidf_matrix_ = None
-        self._svd_ = None
-        self._svd_wfm_ = None
 
     # fills the indexer with the set of all packages to train on
     # resets all internal state, calling this repeatedly is destructive
     def append(self, package):
-        self.__reset()
         self._packages.append(package)
 
         # build corpus (all terms => global count of occurance)
@@ -39,12 +27,67 @@ class PackagesTermIndexer:
         # increment count for this term
         self._global_term_count[term] += count
 
+    def fit_trim(self):
+        return LSIDoer(self._packages, self._global_term_count)
+
+
+class Package:
+    def __init__(self, name):
+        self.name = name
+        self._local_term_count = {}
+
+    def keys(self):
+        return self._local_term_count.keys()
+
+    def __getitem__(self, key):
+        return self._local_term_count[key]
+
+    def __contains__(self, key):
+        return key in self._local_term_count
+
+    def iteritems(self):
+        return self._local_term_count.iteritems()
+
+    def register_term(self, term):        
+        # initialize term count if necessary
+        if term not in self._local_term_count:
+            self._local_term_count[term] = 0
+
+        self._local_term_count[term] += 1
+
+
+class LSIDoer:
+    def __init__(self, packages, global_term_count, feature_limit=1000):
+        self._global_term_count = OrderedDict(sorted(global_term_count.iteritems(), key=lambda x: x[1], reverse=True)[0:feature_limit])
+        self._packages = packages
+        self._global_weights_ = None
+        self._word_frequency_matrix_ = None
+        self._tfidf_matrix_ = None
+        self._package_names_ = None
+        self._svd_ = None
+        self._svd_wfm_ = None
+
+    # provide custom method to pickle this object
+    # with as little information as necessary
+    def __getstate__(self):
+        return {
+            '_global_weights_': self.global_weights_,
+            '_word_frequency_matrix_': self.word_frequency_matrix(),
+            '_tfidf_matrix_': self.tfidf_matrix(),
+            '_svd_': self.svd(),
+            '_svd_wfm_': self.svd_wfm()
+        }
+
     @property
     def term_indices_(self):
-        return self._global_term_count.keys()
+        return self.global_weights_.keys()
+
     @property
     def package_names_(self):
-        return map(lambda p: p.name, self._packages)
+        # memoize result
+        if self._package_names_ is None:
+            self._package_names_ = map(lambda p: p.name, self._packages)
+        return self._package_names_
 
     # calculate term frequency-inverse document frequency for the dataset
     # https://en.wikipedia.org/wiki/Tf%E2%80%93idf
@@ -53,7 +96,7 @@ class PackagesTermIndexer:
         # memoize the result
         if self._global_weights_ is not None:
             return self._global_weights_
-        self._global_weights_ = {}
+        self._global_weights_ = OrderedDict()
 
         # logn: log base 2 of the number of packages
         logn = math.log(len(self._packages), 2)
@@ -64,10 +107,8 @@ class PackagesTermIndexer:
             for pkg in self._packages:
                 if term in pkg:
                     local_count = pkg[term]
-                    if local_count == 0 or global_count == 0:
-                        print "unexpected zero: " + term
                     l_to_g_ratio = 1.0 * local_count / global_count
-                    weight += l_to_g_ratio * math.log(l_to_g_ratio, 2) / logn
+                    weight += (l_to_g_ratio * math.log(l_to_g_ratio, 2) / logn)
 
             self._global_weights_[term] = weight
         return self._global_weights_
@@ -82,16 +123,17 @@ class PackagesTermIndexer:
             return self._word_frequency_matrix_
 
         # build a term => index lookup
-        all_terms = self._global_term_count.keys()
+        all_terms = self.global_weights_.keys()
         index = dict([(val, idx) for idx, val in enumerate(all_terms)])
 
         pkg_vecs = []
         for pkg in self._packages:
             # initialize row to be a bunch of zeros
-            row = [0] * len(self._global_term_count)
+            row = [0] * len(self.global_weights_)
 
             # fill in the frequency for terms that exist in this package
             for term, local_count in pkg.iteritems():
+                if term not in index: continue
                 idx = index[term]
                 row[idx] = local_count
             pkg_vecs.append(row)
@@ -108,7 +150,7 @@ class PackagesTermIndexer:
         global_weights_by_index = self.global_weights_.values()
 
         # build a term => index lookup
-        all_terms = self._global_term_count.keys()
+        all_terms = self.global_weights_.keys()
         index = dict([(val, idx) for idx, val in enumerate(all_terms)])
         row_len = len(index)
 
@@ -119,6 +161,7 @@ class PackagesTermIndexer:
 
             # fill in the frequency for terms that exist in this package
             for term, local_count in pkg.iteritems():
+                if term not in index: continue
                 idx = index[term]
                 global_weight = global_weights_by_index[idx]
 
@@ -148,8 +191,8 @@ class PackagesTermIndexer:
     # map an unknown package to our term space
     # result is a word frequency matrix
     def fold_wfm(self, package):
-        vec = [0] * len(self._global_term_count)
-        for idx, term in enumerate(self._global_term_count):
+        vec = [0] * len(self.global_weights_)
+        for idx, term in enumerate(self.global_weights_):
             if term not in package: continue
             vec[idx] = package[term]
         return np.matrix(vec)
@@ -157,8 +200,8 @@ class PackagesTermIndexer:
     # map an unknown package to our term space
     # result is a tfidf matrix
     def fold_tfidf(self, package):
-        vec = [0] * len(self._global_term_count)
-        for idx, term in enumerate(self._global_term_count):
+        vec = [0] * len(self.global_weights_)
+        for idx, term in enumerate(self.global_weights_):
             if term not in package: continue
             global_weight = self.global_weights_[term]
             local_count = package[term]
@@ -201,28 +244,3 @@ class PackagesTermIndexer:
         folded_svd_vec = np.dot(folded_doc_dot_T, sigma_inv)
 
         return folded_svd_vec
-
-
-class Package:
-    def __init__(self, name):
-        self.name = name
-        self._local_term_count = {}
-
-    def keys(self):
-        return self._local_term_count.keys()
-
-    def __getitem__(self, key):
-        return self._local_term_count[key]
-
-    def __contains__(self, key):
-        return key in self._local_term_count
-
-    def iteritems(self):
-        return self._local_term_count.iteritems()
-
-    def register_term(self, term):        
-        # initialize term count if necessary
-        if term not in self._local_term_count:
-            self._local_term_count[term] = 0
-
-        self._local_term_count[term] += 1
