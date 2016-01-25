@@ -28,12 +28,13 @@ class PackagesTermIndexer:
         self._global_term_count[term] += count
 
     def fit_trim(self):
-        return LSIDoer(self._packages, self._global_term_count)
+        return LSIDoer(self._packages, self._global_term_count, feature_limit=200)
 
 
 class Package:
-    def __init__(self, name):
+    def __init__(self, name, github_url):
         self.name = name
+        self.github_url = github_url
         self._local_term_count = {}
 
     def keys(self):
@@ -63,9 +64,9 @@ class LSIDoer:
         self._global_weights_ = None
         self._word_frequency_matrix_ = None
         self._tfidf_matrix_ = None
-        self._package_names_ = None
         self._svd_ = None
         self._svd_wfm_ = None
+        self._package_vitals_ = [(p.name, p.github_url) for p in packages]
 
     # provide custom method to pickle this object
     # with as little information as necessary
@@ -75,7 +76,8 @@ class LSIDoer:
             '_word_frequency_matrix_': self.word_frequency_matrix(),
             '_tfidf_matrix_': self.tfidf_matrix(),
             '_svd_': self.svd(),
-            '_svd_wfm_': self.svd_wfm()
+            '_svd_wfm_': self.svd_wfm(),
+            '_package_vitals_': self._package_vitals_
         }
 
     @property
@@ -84,10 +86,12 @@ class LSIDoer:
 
     @property
     def package_names_(self):
-        # memoize result
-        if self._package_names_ is None:
-            self._package_names_ = map(lambda p: p.name, self._packages)
-        return self._package_names_
+        return [p[0] for p in self._package_vitals_]
+
+    @property
+    def package_github_urls_(self):
+        return [p[1] for p in self._package_vitals_]
+
 
     # calculate term frequency-inverse document frequency for the dataset
     # https://en.wikipedia.org/wiki/Tf%E2%80%93idf

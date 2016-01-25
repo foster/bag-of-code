@@ -1,4 +1,4 @@
-from os.path import isfile
+from os.path import isfile, islink
 import codecs
 import json
 import os
@@ -27,6 +27,9 @@ def tokenize_package(dir_name):
             if not filename.endswith('.js'):
                 continue
             file_path = os.path.join(dirpath, filename)
+            if islink(file_path):
+                continue
+
             with codecs.open(file_path, 'r', encoding='utf8') as f:
                 try:
                     for line in f:
